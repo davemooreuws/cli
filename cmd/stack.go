@@ -567,13 +567,34 @@ var stackListCmd = &cobra.Command{
 			}
 		}
 
+		providerLength := 8 // start with the width of the column heading "provider".
+		for _, stackFile := range stackFiles {
+			stackName, err := stack.GetStackNameFromFileName(stackFile)
+			tui.CheckErr(err)
+
+			stackConfig, err := stack.ConfigFromName[map[string]any](fs, stackName)
+			tui.CheckErr(err)
+
+			providerParts := strings.SplitN(stackConfig.Provider, "@", 2)
+			if len(providerParts) == 2 {
+				providerName := providerParts[0]
+				if len(providerName) > providerLength {
+					providerLength = len(providerName)
+				}
+			}
+		}
+
 		nameStyle := lipgloss.NewStyle().Bold(true).Foreground(tui.Colors.Blue).Width(nameLength + 1).PaddingRight(1).BorderRight(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(tui.Colors.Gray)
-		providerStyle := lipgloss.NewStyle().Foreground(tui.Colors.Purple).PaddingLeft(1)
+		providerStyle := lipgloss.NewStyle().Foreground(tui.Colors.Purple).Width(providerLength + 2).PaddingLeft(1).BorderRight(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(tui.Colors.Gray)
+		versionStyle := lipgloss.NewStyle().Foreground(tui.Colors.Blue).PaddingLeft(1)
+
+		latestProviderVersion := update.FetchLatestProviderVersion()
 
 		v := view.New()
 		v.Break()
-		v.Add("name").WithStyle(nameStyle)
-		v.Addln("provider").WithStyle(providerStyle)
+		v.Add("Name").WithStyle(nameStyle)
+		v.Add("Provider").WithStyle(providerStyle)
+		v.Addln("Version (✓ Latest, ⬤ Outdated)").WithStyle(versionStyle)
 		v.Break()
 		for _, stackFile := range stackFiles {
 			stackName, err := stack.GetStackNameFromFileName(stackFile)
@@ -582,9 +603,35 @@ var stackListCmd = &cobra.Command{
 			stackConfig, err := stack.ConfigFromName[map[string]any](fs, stackName)
 			tui.CheckErr(err)
 
+			providerName := ""
+			providerVersion := ""
+			providerParts := strings.SplitN(stackConfig.Provider, "@", 2)
+			if len(providerParts) == 2 {
+				providerName = providerParts[0]
+				providerVersion = providerParts[1]
+			}
+
+			var versionDisplay string
+
+			// Compare version and apply styling
+			if providerVersion == latestProviderVersion {
+				versionDisplay = providerVersion + " ✓"
+			} else {
+				versionDisplay = providerVersion + " ⬤"
+			}
+
 			v.Add(stackConfig.Name).WithStyle(nameStyle)
-			v.Addln(stackConfig.Provider).WithStyle(providerStyle)
+			v.Add(providerName).WithStyle(providerStyle)
+			v.Addln(versionDisplay).WithStyle(versionStyle)
 		}
+
+		// add legend for versioning
+		v.Break()
+		v.Addln("✓ = Latest").WithStyle(versionStyle)
+		v.Addln("⬤ = Outdated").WithStyle(versionStyle)
+		v.Break()
+		v.Addln("For more details, visit: https://github.com/nitrictech/nitric/releases")
+
 		fmt.Println(v.Render())
 	},
 }
