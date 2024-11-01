@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/netip"
@@ -135,17 +136,19 @@ func (l *LocalSqlServer) start() error {
 		return err
 	}
 
-	err = dockerClient.ImagePull("postgres:latest", types.ImagePullOptions{
+	err = dockerClient.ImagePull("postgres:17", types.ImagePullOptions{
 		All: false,
 	})
 	if err != nil {
 		return err
 	}
 
+	volumeName := fmt.Sprintf("%s-local-sql", l.projectName)
+
 	// create a persistent volume for the database
 	volume, err := dockerClient.VolumeCreate(context.Background(), volume.CreateOptions{
 		Driver: "local",
-		Name:   fmt.Sprintf("%s-local-sql", l.projectName),
+		Name:   volumeName,
 	})
 	if err != nil {
 		return err
@@ -163,7 +166,7 @@ func (l *LocalSqlServer) start() error {
 	_ = newLis.Close()
 
 	l.containerId, err = dockerClient.ContainerCreate(&container.Config{
-		Image: "postgres",
+		Image: "postgres:17",
 		Env: []string{
 			"POSTGRES_PASSWORD=localsecret",
 			"PGDATA=/var/lib/postgresql/data/pgdata",
@@ -189,7 +192,49 @@ func (l *LocalSqlServer) start() error {
 		return err
 	}
 
-	return dockerClient.ContainerStart(context.Background(), l.containerId, container.StartOptions{})
+	err = dockerClient.ContainerStart(context.Background(), l.containerId, container.StartOptions{})
+	if err != nil {
+		return err
+	}
+
+	// Attach to the container to get stdout and stderr
+	attachOptions := container.AttachOptions{
+		Stream: true,
+		Stdout: true,
+		Stderr: true,
+	}
+
+	attachResponse, err := dockerClient.ContainerAttach(context.TODO(), l.containerId, attachOptions)
+	if err != nil {
+		return fmt.Errorf("error attaching to sql container %s: %w", l.containerId, err)
+	}
+
+	// ensure any errors are logged
+	defer func() {
+		defer attachResponse.Close()
+
+		// print any errors from attach
+		// Read from the attached response and print any errors
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := attachResponse.Reader.Read(buf)
+			if n > 0 {
+				log := string(buf[:n])
+				if strings.Contains(log, "FATAL:  database files are incompatible with server") {
+					logger.Errorf("Error starting SQL Server: Database files are incompatible with server, please remove the volume %s and try again", volumeName)
+				}
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					break
+				}
+				fmt.Printf("Error reading container output: %v\n", readErr)
+				break
+			}
+		}
+	}()
+
+	return nil
 }
 
 func (l *LocalSqlServer) Stop() error {
